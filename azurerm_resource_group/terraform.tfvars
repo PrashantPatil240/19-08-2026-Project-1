@@ -4,7 +4,7 @@ resource_groups = {
     location   = "centralindia"
     managed_by = "Terraform"
   }
-   RG-2 = {
+  RG-2 = {
     name       = "RG-RUDRA"
     location   = "centralindia"
     managed_by = "Terraform"
