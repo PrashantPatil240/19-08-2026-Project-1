@@ -1,0 +1,205 @@
+name: Terraform Scan Plan Apply
+
+on:
+  push:
+    branches:
+      - "feature/**"
+      - "main"
+
+  pull_request:
+    branches:
+      - "main"
+
+permissions:
+  contents: read
+
+env:
+  TF_WORKING_DIR: ./azurerm_resource_group
+
+jobs:
+
+  # =========================================================
+  # 1. TERRAFORM SCAN
+  # Runs on feature branches, main and PR
+  # =========================================================
+
+  scan:
+    name: Terraform Security Scan
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # -----------------------------
+      # Terraform Setup
+      # -----------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # -----------------------------
+      # Terraform Format Check
+      # -----------------------------
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      # -----------------------------
+      # Terraform Init
+      # -----------------------------
+      - name: Terraform Init
+        run: terraform init -backend=false
+
+      # -----------------------------
+      # Terraform Validate
+      # -----------------------------
+      - name: Terraform Validate
+        run: terraform validate
+
+      # -----------------------------
+      # TFLint
+      # -----------------------------
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: Run TFLint
+        run: |
+          tflint --init
+          tflint
+
+      # -----------------------------
+      # Trivy Terraform Security Scan
+      # -----------------------------
+      - name: Terraform Security Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: ${{ env.TF_WORKING_DIR }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+
+
+  # =========================================================
+  # 2. TERRAFORM PLAN
+  # Runs after successful scan
+  # =========================================================
+
+  plan:
+    name: Terraform Plan
+    needs: scan
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # -----------------------------
+      # Azure Login
+      # -----------------------------
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # -----------------------------
+      # Terraform Setup
+      # -----------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # -----------------------------
+      # Terraform Init
+      # -----------------------------
+      - name: Terraform Init
+        run: terraform init
+
+      # -----------------------------
+      # Terraform Plan
+      # -----------------------------
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -var-file="terraform.tfvars" \
+            -out=tfplan
+
+      # -----------------------------
+      # Upload Plan Artifact
+      # -----------------------------
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ github.sha }}
+          path: ${{ env.TF_WORKING_DIR }}/tfplan
+
+
+  # =========================================================
+  # 3. TERRAFORM APPLY
+  # ONLY MAIN BRANCH PUSH
+  # =========================================================
+
+  apply:
+    name: Terraform Apply
+    needs: plan
+
+    # VERY IMPORTANT CONDITION
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push'
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # -----------------------------
+      # Azure Login
+      # -----------------------------
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # -----------------------------
+      # Terraform Setup
+      # -----------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # -----------------------------
+      # Terraform Init
+      # -----------------------------
+      - name: Terraform Init
+        run: terraform init
+
+      # -----------------------------
+      # Download Plan
+      # -----------------------------
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan-${{ github.sha }}
+          path: ${{ env.TF_WORKING_DIR }}
+
+      # -----------------------------
+      # Terraform Apply
+      # -----------------------------
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
